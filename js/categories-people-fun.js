@@ -264,6 +264,54 @@ Y: Yogi Bear
 Z: | Zazu
 `},
 {
+  id: 'disney-films', name: 'Disney films', rule: "Disney and Pixar. Ignore 'The': The Lion King is L",
+  data: `
+A: Aladdin, Alice in Wonderland, The Aristocats, Atlantis/Atlantis The Lost Empire
+B: Bambi, Beauty and the Beast, Big Hero 6, Bolt, Brave, A Bug's Life/Bugs Life, Brother Bear | Bedknobs and Broomsticks
+C: Cinderella, Cars, Coco, Cruella | Chicken Little, Christopher Robin
+D: Dumbo | Dinosaur, Descendants
+E: Encanto, Elemental, Enchanted | The Emperor's New Groove
+F: Frozen, Finding Nemo, Finding Dory, Fantasia | Freaky Friday, The Fox and the Hound
+H: Hercules, The Hunchback of Notre Dame/Hunchback | High School Musical, Home on the Range
+I: Inside Out, The Incredibles/Incredibles
+J: The Jungle Book/Jungle Book | James and the Giant Peach
+L: The Lion King/Lion King, The Little Mermaid/Little Mermaid, Lilo & Stitch/Lilo and Stitch, Lady and the Tramp, Luca | Lightyear
+M: Moana, Mulan, Monsters Inc/Monsters, Mary Poppins, Maleficent | Monsters University, Meet the Robinsons
+O: Onward | Oliver & Company/Oliver and Company, Old Yeller
+P: Peter Pan, Pinocchio, Pocahontas, The Princess and the Frog/Princess and the Frog, Pirates of the Caribbean | Planes
+R: Ratatouille, Robin Hood, Raya and the Last Dragon/Raya, The Rescuers/Rescuers | Ralph Breaks the Internet
+S: Snow White/Snow White and the Seven Dwarfs, Sleeping Beauty, Soul | The Sword in the Stone/Sword in the Stone, Strange World
+T: Toy Story, Tangled, Tarzan, Turning Red | Treasure Planet, Tron
+U: Up
+W: Wall-E, Wreck-It Ralph, Winnie the Pooh | Wish
+Z: Zootropolis/Zootopia
+`},
+{
+  id: 'disney-characters', name: 'Disney characters', rule: 'Disney and Pixar, by first name: Mike Wazowski is M',
+  data: `
+A: Ariel, Aladdin, Anna, Abu, Alice | Aurora, Asha, Anger
+B: Belle, Baloo, Bambi, Buzz Lightyear/Buzz, Bagheera, Baymax | Bo Peep, Bruno, Boo
+C: Cinderella, Cruella de Vil/Cruella, Captain Hook | Chip, Cogsworth
+D: Donald Duck/Donald, Dory, Dumbo, Daisy Duck/Daisy, Dopey | Doc, Dash
+E: Elsa, Eeyore, Esmeralda | Edna Mode/Edna, EVE, Elastigirl
+F: Flounder, Flynn Rider/Flynn | Figaro, Frozone
+G: Goofy, Genie, Gaston, Grumpy | Gus
+H: Hercules, Hades | Hamm, Happy
+J: Jafar, Jasmine, Jessie, Jiminy Cricket/Jiminy | Joy
+K: Kristoff | Kaa, King Louie
+L: Lumiere, Lightning McQueen/Lightning | Lilo, Lady
+M: Mickey Mouse/Mickey, Minnie Mouse/Minnie, Maleficent, Mufasa, Mulan, Moana, Merida, Mike Wazowski/Mike, Maui, Mushu | Mirabel, Marlin, Mater, Meeko
+N: Nemo, Nala
+O: Olaf
+P: Pluto, Peter Pan, Pocahontas, Pinocchio, Piglet, Pumbaa | Pascal, Pua
+R: Rapunzel, Rafiki, Remy | Rex, Ralph
+S: Simba, Stitch, Scar, Sebastian, Sulley, Snow White, Sven | Sleepy, Sneezy
+T: Tigger, Tinker Bell, Timon, Tiana, Thumper | Tramp
+U: | Ursula
+W: Woody, Winnie the Pooh/Pooh, Wall-E | Wendy
+Y: | Yzma
+`},
+{
   id: 'clubs', name: 'Football clubs', rule: "Any club: Man Utd and Spurs count",
   data: `
 A: Arsenal, Aston Villa, Ajax, AC Milan, Atletico Madrid
