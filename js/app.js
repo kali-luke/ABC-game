@@ -1,5 +1,5 @@
 import * as G from './game.js';
-import { createDb, hasFirebase } from './db.js';
+import { createDb, createMemoryDb, hasFirebase } from './db.js';
 
 // ---------------- helpers ----------------
 const $ = s => document.querySelector(s);
@@ -24,7 +24,15 @@ const me = store.get('pid', null, idStore) || newId();
 store.set('pid', me, idStore);
 let myName = store.get('name', '', idStore);
 
-let db;
+let db, mainDb;
+let botMode = false;       // practice game against the bot, held only in this phone's memory
+const BOT_ID = 'bot';
+const BOT_SPEEDS = {
+  slow:   { min: 25, max: 75, miss: 0.25, label: 'Slow' },
+  medium: { min: 12, max: 50, miss: 0.15, label: 'Medium' },
+  fast:   { min: 5,  max: 28, miss: 0.05, label: 'Fast' },
+};
+let botPlan = null;
 let roomCode = null;
 let room = null;           // latest snapshot of rooms/{code}
 let unsubRoom = null;
@@ -43,7 +51,7 @@ const roomPath = (p = '') => `rooms/${roomCode}${p ? '/' + p : ''}`;
 
 // ---------------- boot ----------------
 (async function boot() {
-  try { db = await createDb(); }
+  try { db = mainDb = await createDb(); }
   catch (e) { console.error(e); $('#app').innerHTML = `<main class="screen"><p class="center">Couldn't connect. Check your internet and reload.</p></main>`; return; }
   const hashCode = (location.hash || '').replace('#', '').toUpperCase();
   if (/^[A-Z]{4}$/.test(hashCode)) {
@@ -92,7 +100,7 @@ async function joinRoom() {
 
 function enterRoom(code) {
   roomCode = code;
-  history.replaceState(null, '', '#' + code);
+  if (!botMode) history.replaceState(null, '', '#' + code);
   ui.tried = []; ui.feedback = null; ui.pulseReady = false; ui.lastPulse = {};
   if (unsubRoom) unsubRoom();
   unsubRoom = db.on(roomPath(), v => {
@@ -111,6 +119,12 @@ function enterRoom(code) {
 
 async function leaveRoom(silent) {
   const code = roomCode;
+  if (botMode) {
+    if (unsubRoom) unsubRoom(); unsubRoom = null;
+    if (unsubStats) unsubStats(); unsubStats = null; statsKey = null; stats = null;
+    botMode = false; botPlan = null; db = mainDb; roomCode = null; room = null;
+    render(); return;
+  }
   if (unsubRoom) unsubRoom(); unsubRoom = null;
   if (unsubStats) unsubStats(); unsubStats = null; statsKey = null; stats = null;
   if (code && !silent && room && room.state && ['lobby', 'finished'].includes(room.state.status)) {
@@ -133,7 +147,7 @@ function watchStats() {
   if (unsubStats) unsubStats();
   statsKey = key;
   const pairs = store.get('pairs', []);
-  if (!pairs.includes(key)) store.set('pairs', [...pairs, key].slice(-10));
+  if (!botMode && !pairs.includes(key)) store.set('pairs', [...pairs, key].slice(-10));
   unsubStats = db.on(`stats/${key}`, v => { stats = v; if (currentKey && currentKey.startsWith('final')) updateFinal(); });
 }
 
@@ -177,7 +191,7 @@ async function startGame() {
   }
 }
 
-async function claimWin(idx) {
+async function claimWin(idx, who = me) {
   const res = await db.transaction(roomPath('state'), cur => {
     if (!cur || cur.status !== 'playing' || cur.idx !== idx || !cur.round || cur.round.winner) return undefined;
     const now = db.now();
@@ -187,11 +201,11 @@ async function claimWin(idx) {
     const points = G.pointsFor(now - cur.round.startAt, settings);
     return {
       ...cur, status: 'result',
-      round: { ...cur.round, winner: me, points, resultAt: now },
-      history: [...(cur.history || []), { letter: cur.round.letter, answer: cur.round.answer, winner: me, points }],
+      round: { ...cur.round, winner: who, points, resultAt: now },
+      history: [...(cur.history || []), { letter: cur.round.letter, answer: cur.round.answer, winner: who, points }],
     };
   });
-  return !!(res.committed && res.value && res.value.round && res.value.round.winner === me && res.value.idx === idx);
+  return !!(res.committed && res.value && res.value.round && res.value.round.winner === who && res.value.idx === idx);
 }
 
 function timeoutRound(idx) {
@@ -292,6 +306,7 @@ function tick() {
     attempt(`adv-${st.gameNo}-${st.idx}`, () => advance(st.idx));
   }
   if (st.status === 'finished' && !st.statsDone) attempt(`stats-${st.gameNo}`, recordStats);
+  if (botMode) botTick();
   if (currentKey && currentKey.startsWith('play')) updatePlay();
   if (currentKey && currentKey.startsWith('result')) updateResult();
 }
@@ -355,12 +370,14 @@ async function buildHome() {
       <input id="code" maxlength="4" placeholder="CODE" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
       <button id="join">Join</button>
     </div>
+    <button id="practice">Practice vs bot</button>
     <div class="records" id="records"></div>
     <div class="spacer"></div>
     ${hasFirebase ? '' : `<p class="note">Local test mode: Firebase isn't set up yet, so games only work between two tabs on this device. See SETUP.md to play across phones.</p>`}
   </main>`;
   $('#create').onclick = createRoom;
   $('#join').onclick = joinRoom;
+  $('#practice').onclick = startPractice;
   $('#code').addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); });
   // all-time records for pairs this device has played
   const pairs = store.get('pairs', []);
@@ -385,9 +402,12 @@ function buildLobby() {
   const s = S();
   const field = (k, label, step = 1) => `<span>${label}</span><input type="number" inputmode="decimal" step="${step}" min="0" data-k="${k}" value="${s[k]}" ${isHost ? '' : 'disabled'}>`;
   $('#app').innerHTML = `<main class="screen lobby">
-    <p class="muted center">Game code</p>
+    ${botMode ? `<h2 class="center" style="margin-top:20px">Practice vs bot</h2>
+    <p class="muted center small">Plays on this phone only. Nothing counts towards your record.</p>
+    <div class="seg seg3" id="botspeed">${Object.entries(BOT_SPEEDS).map(([k, v]) => `<button data-speed="${k}">${v.label}</button>`).join('')}</div>`
+    : `<p class="muted center">Game code</p>
     <div class="room-code">${esc(roomCode)}</div>
-    <button id="share">Send invite link</button>
+    <button id="share">Send invite link</button>`}
     <ul class="players" id="players"></ul>
     <div class="seg" id="mode">
       <button data-mode="full" ${isHost ? '' : 'disabled'}>A to Z</button>
@@ -408,7 +428,12 @@ function buildLobby() {
     ${isHost ? `<button id="start" class="primary">Start game</button>` : `<p class="center muted" id="waitmsg">Waiting for ${esc(nameOf(room.meta.host))} to start…</p>`}
     <button id="leave" class="link">Leave</button>
   </main>`;
-  $('#share').onclick = share;
+  if (botMode) {
+    document.querySelectorAll('#botspeed button').forEach(b => b.onclick = () => {
+      store.set('botSpeed', b.dataset.speed);
+      db.update(roomPath('state'), { botSpeed: b.dataset.speed });
+    });
+  } else $('#share').onclick = share;
   $('#leave').onclick = () => leaveRoom(false);
   if (isHost) {
     $('#start').onclick = startGame;
@@ -432,6 +457,7 @@ function updateLobby() {
   if (ids.length < 2) list.push(`<li class="waiting">Waiting for player 2… share the code</li>`);
   $('#players').innerHTML = list.join('');
   document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.mode === (room.state.mode || 'full')));
+  document.querySelectorAll('#botspeed button').forEach(b => b.classList.toggle('on', b.dataset.speed === (room.state.botSpeed || 'medium')));
   const st = $('#start'); if (st) st.disabled = ids.length < 2;
   if (room.meta.host !== me) {
     const s = S();
@@ -595,5 +621,53 @@ function updateFinal() {
     $('#catwins').innerHTML = `<h3>Wins by category</h3>${rows.length ? `<table class="stat-table">
       <tr><td class="muted small">Category</td><td class="n me small">${esc(nameOf(me))}</td><td class="n them small">${esc(nameOf(opp))}</td></tr>
       ${rows.map(r => `<tr><td>${esc(r.name)}</td><td class="n me">${r.a}</td><td class="n them">${r.b}</td></tr>`).join('')}</table>` : '<div class="muted">No category wins yet</div>'}`;
+  }
+}
+
+// ---------------- practice bot ----------------
+async function startPractice() {
+  if (!readName()) return;
+  botMode = true;
+  db = createMemoryDb();
+  const now = db.now();
+  const code = 'PRAC';
+  await db.set(`rooms/${code}`, {
+    meta: { host: me, createdAt: now },
+    players: {
+      [me]: { name: myName, joinedAt: now, online: true },
+      [BOT_ID]: { name: 'Bot', joinedAt: now + 1, online: true },
+    },
+    state: {
+      status: 'lobby', mode: store.get('mode', 'full'), botSpeed: store.get('botSpeed', 'medium'),
+      settings: { ...G.DEFAULT_SETTINGS, ...store.get('settings', {}) }, gameNo: 0,
+    },
+  });
+  enterRoom(code);
+}
+
+function makeBotPlan(st) {
+  const s = S();
+  const sp = BOT_SPEEDS[st.botSpeed] || BOT_SPEEDS.medium;
+  const answerAt = Math.random() < sp.miss ? null : (sp.min + Math.random() * (sp.max - sp.min)) * 1000;
+  const end = Math.min(answerAt ?? s.roundLength * 1000, s.roundLength * 1000);
+  const wrong = [];
+  const n = Math.floor(Math.random() * 4); // 0 to 3 wrong guesses
+  for (let i = 0; i < n; i++) wrong.push({ at: 2000 + Math.random() * Math.max(0, end - 3000), done: false });
+  return { key: `${st.gameNo}-${st.idx}`, answerAt, wrong, done: false };
+}
+
+function botTick() {
+  const st = room && room.state;
+  if (!st || st.status !== 'playing' || !st.round) return;
+  const key = `${st.gameNo}-${st.idx}`;
+  if (!botPlan || botPlan.key !== key) botPlan = makeBotPlan(st);
+  const elapsed = db.now() - st.round.startAt;
+  if (elapsed < 0) return;
+  for (const w of botPlan.wrong) {
+    if (!w.done && elapsed >= w.at) { w.done = true; db.set(roomPath(`pulse/${BOT_ID}`), { t: db.now(), idx: st.idx }); }
+  }
+  if (!botPlan.done && botPlan.answerAt != null && elapsed >= botPlan.answerAt) {
+    botPlan.done = true;
+    claimWin(st.idx, BOT_ID);
   }
 }

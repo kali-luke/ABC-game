@@ -45,13 +45,20 @@ async function createFirebaseDb() {
 }
 
 // ---------------- Local (same device, between tabs) ----------------
-function createLocalDb() {
+// In-memory database for practice games against the bot (nothing leaves this phone).
+export function createMemoryDb() {
+  let tree = {};
+  return createLocalDb({ memory: { read: () => JSON.parse(JSON.stringify(tree)), write: t => { tree = t; } } });
+}
+
+function createLocalDb(opts = {}) {
   const KEY = 'abc-local-db';
-  const chan = typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('abc-local-db') : null;
+  const mem = opts.memory;
+  const chan = !mem && typeof BroadcastChannel !== 'undefined' ? new BroadcastChannel('abc-local-db') : null;
   const listeners = new Set();
 
-  const readTree = () => { try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } };
-  const writeTree = t => { localStorage.setItem(KEY, JSON.stringify(t)); };
+  const readTree = () => { if (mem) return mem.read(); try { return JSON.parse(localStorage.getItem(KEY)) || {}; } catch { return {}; } };
+  const writeTree = t => { if (mem) mem.write(t); else localStorage.setItem(KEY, JSON.stringify(t)); };
   const parts = p => p.split('/').filter(Boolean);
   const getAt = (t, p) => parts(p).reduce((o, k) => (o == null ? undefined : o[k]), t);
   const setAt = (t, p, v) => {
@@ -63,10 +70,10 @@ function createLocalDb() {
   const notify = () => { for (const l of listeners) l(); };
   const changed = () => { notify(); chan && chan.postMessage('change'); };
   if (chan) chan.onmessage = notify;
-  window.addEventListener('storage', e => { if (e.key === KEY) notify(); });
+  if (!mem) window.addEventListener('storage', e => { if (e.key === KEY) notify(); });
 
   return {
-    mode: 'local',
+    mode: mem ? 'memory' : 'local',
     now: () => Date.now(),
     async get(p) { return clone(getAt(readTree(), p)); },
     async set(p, v) { const t = readTree(); setAt(t, p, clone(v)); writeTree(t); changed(); },
