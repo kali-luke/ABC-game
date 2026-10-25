@@ -273,8 +273,7 @@ async function submitGuess(text) {
   if (st.status !== 'playing') return;
   const now = db.now();
   if (now < st.round.startAt) return;
-  const input = $('#guess');
-  if (Date.now() < ui.lockUntil) { $('#gf').classList.remove('shake'); void $('#gf').offsetWidth; $('#gf').classList.add('shake'); return; }
+  if (Date.now() < ui.lockUntil) { const g = $('#guess'); g.classList.remove('shake'); void g.offsetWidth; g.classList.add('shake'); return; }
   const r = G.checkGuess(catOf(st), st.round.letter, st.round.answer, text);
   if (r.result === 'empty') return;
   if (r.result === 'correct') {
@@ -290,7 +289,7 @@ async function submitGuess(text) {
   ui.feedback = r.result === 'valid' ? { kind: 'valid', text: `✓ ${r.matched} is valid, but not it` } : { kind: 'invalid', text: `✗ Not valid` };
   if (r.result === 'valid' && !ui.tried.includes(r.matched)) ui.tried.push(r.matched);
   ui.lockUntil = Date.now() + S().lockout * 1000;
-  input.value = '';
+  ui.typed = '';
   db.set(roomPath(`pulse/${me}`), { t: db.now(), idx: st.idx });
   updatePlay();
 }
@@ -485,21 +484,64 @@ function buildPlay() {
     <div class="big-letter" id="letter">${esc(st.round.letter)}</div>
     <div class="timer" id="timer"><div class="bar"></div></div>
     <div class="hint" id="hint"></div>
-    <form class="guess-form" id="gf" autocomplete="off">
-      <input id="guess" type="text" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" enterkeyhint="go" placeholder="Type your answer">
-      <button type="submit" class="primary" id="go">Go</button>
-    </form>
+    <div class="guess-display" id="guess"><span class="txt" id="typed"></span><span class="caret"></span><span class="ph" id="ph">Type your answer</span></div>
     <div class="feedback" id="feedback"></div>
     <div class="tried" id="tried"></div>
     <div class="pulse" id="pulse"></div>
+    <div class="kb" id="kb"></div>
   </main>`;
-  $('#gf').onsubmit = e => { e.preventDefault(); submitGuess($('#guess').value); };
-  $('#feedback').onclick = e => {
+  ui.typed = ''; ui.digits = false;
+  renderKeyboard();
+  $('#feedback').addEventListener('pointerdown', e => {
     const b = e.target.closest('.suggest');
-    if (b) { $('#guess').value = b.dataset.v; submitGuess(b.dataset.v); }
-  };
-  if (db.now() >= st.round.startAt) setTimeout(() => $('#guess') && $('#guess').focus(), 50);
+    if (b) { e.preventDefault(); ui.typed = b.dataset.v; submitGuess(b.dataset.v); }
+  });
 }
+
+// ----- in-game keyboard (no phone keyboard, so no jumping and no autocorrect) -----
+const KB_LETTERS = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
+const KB_DIGITS = ['1234567890', 'ASDFGHJKL', 'ZXCVBNM'];
+function renderKeyboard() {
+  const rows = ui.digits ? KB_DIGITS : KB_LETTERS;
+  const key = (k, cls = '', label = k) => `<button type="button" class="key ${cls}" data-k="${esc(k)}">${label}</button>`;
+  $('#kb').innerHTML = `
+    <div class="kb-row">${[...rows[0]].map(c => key(c)).join('')}</div>
+    <div class="kb-row">${[...rows[1]].map(c => key(c)).join('')}</div>
+    <div class="kb-row">${[...rows[2]].map(c => key(c)).join('')}${key('back', 'wide', '⌫')}</div>
+    <div class="kb-row">${key('digits', 'mid', ui.digits ? 'ABC' : '123')}${key(' ', 'space', 'space')}${key('go', 'go', 'Go')}</div>`;
+  const kb = $('#kb');
+  kb.onpointerdown = e => {
+    const b = e.target.closest('.key');
+    if (!b) return;
+    e.preventDefault();
+    pressKey(b.dataset.k);
+    b.classList.add('down');
+    if (b.dataset.k === 'back') ui.backHold = setTimeout(() => { ui.typed = ''; updatePlay(); }, 550);
+  };
+  const up = () => { clearTimeout(ui.backHold); kb.querySelectorAll('.down').forEach(x => x.classList.remove('down')); };
+  kb.onpointerup = up; kb.onpointercancel = up; kb.onpointerleave = up;
+}
+
+function pressKey(k) {
+  if (!room || room.state.status !== 'playing') return;
+  if (k === 'go') { submitGuess(ui.typed); return; }
+  if (k === 'digits') { ui.digits = !ui.digits; renderKeyboard(); return; }
+  if (k === 'back') ui.typed = ui.typed.slice(0, -1);
+  else if (k === ' ') { if (ui.typed && !ui.typed.endsWith(' ')) ui.typed += ' '; }
+  else if (ui.typed.length < 40) ui.typed += k;
+  if (ui.feedback && ui.feedback.kind !== 'near') ui.feedback = null;
+  updatePlay();
+}
+
+// Physical keyboards (computer) still work
+document.addEventListener('keydown', e => {
+  if (!currentKey || !currentKey.startsWith('play') || e.metaKey || e.ctrlKey || e.altKey) return;
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
+  if (e.key === 'Enter') { e.preventDefault(); pressKey('go'); }
+  else if (e.key === 'Backspace') { e.preventDefault(); pressKey('back'); }
+  else if (e.key === ' ') { e.preventDefault(); pressKey(' '); }
+  else if (/^[a-z0-9&'.-]$/i.test(e.key)) { e.preventDefault(); pressKey(e.key.toUpperCase()); }
+});
 
 let wasWaiting = false;
 function updatePlay() {
@@ -520,7 +562,6 @@ function updatePlay() {
     wasWaiting = false;
     letterEl.className = 'big-letter';
     letterEl.textContent = st.round.letter;
-    $('#guess').focus();
   }
   const remaining = Math.max(0, s.roundLength * 1000 - elapsed);
   $('#timer .bar').style.width = `${(remaining / (s.roundLength * 1000)) * 100}%`;
@@ -540,9 +581,11 @@ function updatePlay() {
   if (hint.dataset.html !== hintHTML) { hint.innerHTML = hintHTML; hint.dataset.html = hintHTML; }
 
   const locked = Date.now() < ui.lockUntil;
-  $('#gf').classList.toggle('locked', locked);
-  const go = $('#go');
-  go.textContent = locked ? `${Math.ceil((ui.lockUntil - Date.now()) / 1000)}s` : 'Go';
+  $('#guess').classList.toggle('locked', locked);
+  const go = document.querySelector('.key.go');
+  if (go) { go.textContent = locked ? `${Math.ceil((ui.lockUntil - Date.now()) / 1000)}s` : 'Go'; go.classList.toggle('locked', locked); }
+  if ($('#typed').textContent !== ui.typed) $('#typed').textContent = ui.typed;
+  $('#ph').style.display = ui.typed ? 'none' : '';
 
   const f = ui.feedback;
   let fHTML = '';
