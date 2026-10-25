@@ -314,19 +314,19 @@ async function submitGuess(text) {
   if (r.result === 'correct') {
     const idx = st.idx;
     const won = await claimWin(idx);
-    if (!won) { ui.feedback = { kind: 'invalid', text: 'Too slow!' }; updatePlay(); }
+    if (!won) { ui.feedback = { kind: 'invalid', text: 'Too slow!' }; updateGame(); }
     return;
   }
   if (r.result === 'nearmiss') {
     ui.feedback = { kind: 'near', text: 'Did you mean', suggestion: r.suggestion };
-    updatePlay(); return;
+    updateGame(); return;
   }
   ui.feedback = r.result === 'valid' ? { kind: 'valid', text: `✓ ${r.matched} is valid, but not it` } : { kind: 'invalid', text: `✗ Not valid` };
   if (r.result === 'valid' && !ui.tried.includes(r.matched)) ui.tried.push(r.matched);
   ui.lockUntil = Date.now() + S().lockout * 1000;
-  ui.typed = '';
+  const g = $('#guess'); if (g) g.value = '';
   db.set(roomPath(`pulse/${me}`), { t: db.now(), idx: st.idx });
-  updatePlay();
+  updateGame();
 }
 
 // ---------------- tick ----------------
@@ -341,8 +341,7 @@ function tick() {
   }
   if (st.status === 'finished' && !st.statsDone) attempt(`stats-${st.gameNo}`, recordStats);
   if (botMode) botTick();
-  if (currentKey && currentKey.startsWith('play')) updatePlay();
-  if (currentKey && currentKey.startsWith('result')) updateResult();
+  if (currentKey && currentKey.startsWith('game')) updateGame();
 }
 
 // ---------------- rendering ----------------
@@ -351,8 +350,7 @@ function screenKey() {
   const st = room.state;
   if (st.status === 'lobby') return 'lobby';
   if (st.status === 'picking') return `pick:${st.gameNo}`;
-  if (st.status === 'playing') return `play:${st.gameNo}:${st.idx}`;
-  if (st.status === 'result') return `result:${st.gameNo}:${st.idx}`;
+  if (st.status === 'playing' || st.status === 'result') return `game:${st.gameNo}`;
   if (st.status === 'finished') return `final:${st.gameNo}`;
   return 'home';
 }
@@ -362,13 +360,13 @@ function render() {
   if (key !== currentKey) {
     currentKey = key;
     const kind = key.split(':')[0];
-    ({ home: buildHome, lobby: buildLobby, pick: buildPick, play: buildPlay, result: buildResult, final: buildFinal })[kind]();
+    document.documentElement.classList.toggle('in-game', kind === 'game');
+    ({ home: buildHome, lobby: buildLobby, pick: buildPick, game: buildGame, final: buildFinal })[kind]();
   }
   const kind = currentKey.split(':')[0];
   if (kind === 'lobby') updateLobby();
   if (kind === 'pick') updatePick();
-  if (kind === 'play') updatePlay();
-  if (kind === 'result') updateResult();
+  if (kind === 'game') updateGame();
   if (kind === 'final') updateFinal();
 }
 
@@ -511,118 +509,97 @@ async function share() {
   } catch { /* cancelled */ }
 }
 
-// ----- play -----
-function buildPlay() {
-  const st = room.state, cat = catOf(st);
-  ui.tried = []; ui.feedback = null; ui.lockUntil = 0;
-  $('#app').innerHTML = `<main class="screen play">
+// ----- game: play and round results share one screen, so the phone keyboard stays open all game -----
+function buildGame() {
+  const cat = catOf(room.state);
+  ui.roundKey = null; ui.resultKey = null;
+  $('#app').innerHTML = `<main class="screen game play" id="game">
     ${scorebarHTML()}
     <div class="cat"><div class="cat-name">${esc(cat.name)}</div><div class="rule">${esc(cat.rule)}</div></div>
-    <div class="big-letter" id="letter">${esc(st.round.letter)}</div>
+    <div class="big-letter" id="letter"></div>
     <div class="timer" id="timer"><div class="bar"></div></div>
     <div class="hint" id="hint"></div>
-    <div class="guess-display" id="guess"><span class="txt" id="typed"></span><span class="caret"></span><span class="ph" id="ph">Type your answer</span></div>
+    <form class="guess-form" id="gf" autocomplete="off" action="#">
+      <input id="guess" type="text" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" enterkeyhint="go" maxlength="40" placeholder="Tap here to type">
+      <button type="button" class="primary" id="go">Go</button>
+    </form>
     <div class="feedback" id="feedback"></div>
     <div class="tried" id="tried"></div>
     <div class="pulse" id="pulse"></div>
-    <div class="kb" id="kb"></div>
   </main>`;
-  ui.typed = ''; ui.digits = false;
-  renderKeyboard();
+  const input = $('#guess');
+  $('#gf').onsubmit = e => { e.preventDefault(); submitGuess(input.value); };
+  // Tapping a button would normally take focus from the text box and close the keyboard,
+  // so these act on touch-down and keep the focus where it is.
+  $('#go').addEventListener('pointerdown', e => { e.preventDefault(); submitGuess(input.value); });
   $('#feedback').addEventListener('pointerdown', e => {
     const b = e.target.closest('.suggest');
-    if (b) { e.preventDefault(); ui.typed = b.dataset.v; submitGuess(b.dataset.v); }
+    if (b) { e.preventDefault(); input.value = b.dataset.v; submitGuess(b.dataset.v); }
   });
+  $('#feedback').addEventListener('click', e => e.preventDefault());
+  input.addEventListener('input', () => { if (ui.feedback && ui.feedback.kind !== 'near') { ui.feedback = null; updateGame(); } });
+  input.addEventListener('focus', () => { [30, 250, 600].forEach(t => setTimeout(pinToViewport, t)); });
+  updateGame();
 }
 
-// ----- in-game keyboard (no phone keyboard, so no jumping and no autocorrect) -----
-const KB_LETTERS = ['QWERTYUIOP', 'ASDFGHJKL', 'ZXCVBNM'];
-const KB_DIGITS = ['1234567890', 'ASDFGHJKL', 'ZXCVBNM'];
-function renderKeyboard() {
-  const rows = ui.digits ? KB_DIGITS : KB_LETTERS;
-  const key = (k, cls = '', label = k) => `<button type="button" class="key ${cls}" data-k="${esc(k)}">${label}</button>`;
-  $('#kb').innerHTML = `
-    <div class="kb-row">${[...rows[0]].map(c => key(c)).join('')}</div>
-    <div class="kb-row">${[...rows[1]].map(c => key(c)).join('')}</div>
-    <div class="kb-row">${[...rows[2]].map(c => key(c)).join('')}${key('back', 'wide', '⌫')}</div>
-    <div class="kb-row">${key('digits', 'mid', ui.digits ? 'ABC' : '123')}${key(' ', 'space', 'space')}${key('go', 'go', 'Go')}</div>`;
-  const kb = $('#kb');
-  kb.onpointerdown = e => {
-    const b = e.target.closest('.key');
-    if (!b) return;
-    e.preventDefault();
-    pressKey(b.dataset.k);
-    b.classList.add('down');
-    if (b.dataset.k === 'back') ui.backHold = setTimeout(() => { ui.typed = ''; updatePlay(); }, 550);
-  };
-  const up = () => { clearTimeout(ui.backHold); kb.querySelectorAll('.down').forEach(x => x.classList.remove('down')); };
-  kb.onpointerup = up; kb.onpointercancel = up; kb.onpointerleave = up;
-}
-
-function pressKey(k) {
-  if (!room || room.state.status !== 'playing') return;
-  if (k === 'go') { submitGuess(ui.typed); return; }
-  if (k === 'digits') { ui.digits = !ui.digits; renderKeyboard(); return; }
-  if (k === 'back') ui.typed = ui.typed.slice(0, -1);
-  else if (k === ' ') { if (ui.typed && !ui.typed.endsWith(' ')) ui.typed += ' '; }
-  else if (ui.typed.length < 40) ui.typed += k;
-  if (ui.feedback && ui.feedback.kind !== 'near') ui.feedback = null;
-  updatePlay();
-}
-
-// Physical keyboards (computer) still work
-document.addEventListener('keydown', e => {
-  if (!currentKey || !currentKey.startsWith('play') || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (document.activeElement && document.activeElement.tagName === 'INPUT') return;
-  if (e.key === 'Enter') { e.preventDefault(); pressKey('go'); }
-  else if (e.key === 'Backspace') { e.preventDefault(); pressKey('back'); }
-  else if (e.key === ' ') { e.preventDefault(); pressKey(' '); }
-  else if (/^[a-z0-9&'.-]$/i.test(e.key)) { e.preventDefault(); pressKey(e.key.toUpperCase()); }
-});
-
-let wasWaiting = false;
-function updatePlay() {
-  if (!room || room.state.status !== 'playing') return;
+function updateGame() {
+  if (!room || !['playing', 'result'].includes(room.state.status)) return;
+  const main = $('#game');
+  if (!main) return;
   const st = room.state, s = S(), now = db.now();
+  const rk = `${st.gameNo}-${st.idx}`;
+  if (ui.roundKey !== rk) {
+    ui.roundKey = rk; ui.tried = []; ui.feedback = null; ui.lockUntil = 0;
+    $('#guess').value = '';
+  }
+  const isResult = st.status === 'result';
+  main.classList.toggle('play', !isResult);
+  main.classList.toggle('result', isResult);
   updateScorebar();
+  const letterEl = $('#letter'), hint = $('#hint');
+  const setHint = html => { if (hint.dataset.html !== html) { hint.innerHTML = html; hint.dataset.html = html; } };
+
+  if (isResult) {
+    if (ui.resultKey !== rk) { ui.resultKey = rk; $('#guess').value = ''; }
+    const r = st.round;
+    letterEl.className = 'big-letter'; letterEl.textContent = r.letter;
+    $('#timer .bar').style.width = '0%';
+    const who = r.winner ? (r.winner === me ? 'me' : 'them') : 'none';
+    const line = r.winner ? `${esc(r.winner === me ? 'You' : nameOf(r.winner))} +${r.points}` : 'Nobody got it';
+    const left = Math.max(0, Math.ceil(((r.resultAt || 0) + s.resultPause * 1000 - now) / 1000));
+    const next = st.idx + 1 >= st.letters.length ? `Final scores in ${left}s` : `Next letter (${st.letters[st.idx + 1]}) in ${left}s`;
+    setHint(`<div class="answer-label">The answer was</div><div class="answer">${esc(r.answer)}</div>
+      <div class="winner-line ${who}">${line}</div><div class="next">${next}</div>`);
+    $('#go').textContent = 'Go';
+    return;
+  }
+
   const elapsed = now - st.round.startAt;
-  const letterEl = $('#letter');
   if (elapsed < 0) {
     letterEl.className = 'big-letter wait';
     letterEl.textContent = `Get ready… ${Math.ceil(-elapsed / 1000)}`;
-    $('#hint').innerHTML = '';
+    setHint('');
     $('#timer .bar').style.width = '100%';
-    wasWaiting = true;
-    return;
-  }
-  if (wasWaiting || letterEl.classList.contains('wait')) {
-    wasWaiting = false;
+  } else {
     letterEl.className = 'big-letter';
     letterEl.textContent = st.round.letter;
+    const remaining = Math.max(0, s.roundLength * 1000 - elapsed);
+    $('#timer .bar').style.width = `${(remaining / (s.roundLength * 1000)) * 100}%`;
+    $('#timer').classList.toggle('low', remaining < 15000);
+    const h = G.hintState(elapsed, s, st.round.answer);
+    if (!h.showCount) {
+      setHint(`<div class="hint-note">2 points up for grabs · hints in ${Math.ceil(h.nextIn / 1000)}s</div>`);
+    } else {
+      const words = G.maskTokens(st.round.answer, st.round.order, h.revealed);
+      setHint(`<div class="mask">${words.map(w => `<div class="word">${w.map(c =>
+        `<span class="ch ${c.isLetter ? (c.shown ? 'shown' : '') : 'punct'}">${c.shown ? esc(c.ch) : ''}</span>`).join('')}</div>`).join('')}</div>
+        <div class="hint-note">${h.nextIn != null ? `Next letter in ${Math.ceil(h.nextIn / 1000)}s · ` : ''}1 point now</div>`);
+    }
   }
-  const remaining = Math.max(0, s.roundLength * 1000 - elapsed);
-  $('#timer .bar').style.width = `${(remaining / (s.roundLength * 1000)) * 100}%`;
-  $('#timer').classList.toggle('low', remaining < 15000);
-
-  const h = G.hintState(elapsed, s, st.round.answer);
-  let hintHTML;
-  if (!h.showCount) {
-    hintHTML = `<div class="hint-note">2 points up for grabs · hints in ${Math.ceil(h.nextIn / 1000)}s</div>`;
-  } else {
-    const words = G.maskTokens(st.round.answer, st.round.order, h.revealed);
-    hintHTML = `<div class="mask">${words.map(w => `<div class="word">${w.map(c =>
-      `<span class="ch ${c.isLetter ? (c.shown ? 'shown' : '') : 'punct'}">${c.shown ? esc(c.ch) : ''}</span>`).join('')}</div>`).join('')}</div>
-      <div class="hint-note">${h.nextIn != null ? `Next letter in ${Math.ceil(h.nextIn / 1000)}s · ` : ''}1 point now</div>`;
-  }
-  const hint = $('#hint');
-  if (hint.dataset.html !== hintHTML) { hint.innerHTML = hintHTML; hint.dataset.html = hintHTML; }
 
   const locked = Date.now() < ui.lockUntil;
-  $('#guess').classList.toggle('locked', locked);
-  const go = document.querySelector('.key.go');
-  if (go) { go.textContent = locked ? `${Math.ceil((ui.lockUntil - Date.now()) / 1000)}s` : 'Go'; go.classList.toggle('locked', locked); }
-  if ($('#typed').textContent !== ui.typed) $('#typed').textContent = ui.typed;
-  $('#ph').style.display = ui.typed ? 'none' : '';
+  $('#gf').classList.toggle('locked', locked);
+  $('#go').textContent = locked ? `${Math.ceil((ui.lockUntil - Date.now()) / 1000)}s` : 'Go';
 
   const f = ui.feedback;
   let fHTML = '';
@@ -633,39 +610,28 @@ function updatePlay() {
   if (fb.dataset.html !== fHTML) { fb.innerHTML = fHTML; fb.dataset.html = fHTML; fb.className = `feedback ${f ? f.kind : ''}`; }
   const triedHTML = ui.tried.length ? `Tried: ${ui.tried.map(esc).join(', ')}` : '';
   if ($('#tried').innerHTML !== triedHTML) $('#tried').innerHTML = triedHTML;
-
   const pulse = $('#pulse');
   const on = Date.now() < ui.pulseUntil;
   pulse.textContent = on ? `${ui.pulseName} guessed ✗` : '';
   pulse.classList.toggle('on', on);
 }
 
-// ----- result -----
-function buildResult() {
-  const st = room.state, r = st.round;
-  const who = r.winner ? (r.winner === me ? 'me' : 'them') : 'none';
-  const line = r.winner ? `${esc(r.winner === me ? 'You' : nameOf(r.winner))} +${r.points}` : 'Nobody got it';
-  $('#app').innerHTML = `<main class="screen result">
-    ${scorebarHTML()}
-    <div class="cat"><div class="cat-name">${esc(catOf(st).name)}</div></div>
-    <div class="big-letter">${esc(r.letter)}</div>
-    <div class="answer-label">The answer was</div>
-    <div class="answer">${esc(r.answer)}</div>
-    <div class="winner-line ${who}">${line}</div>
-    <div class="spacer"></div>
-    <div class="next" id="next"></div>
-  </main>`;
-  updateResult();
+// Keep the game screen exactly over the visible area, above the phone keyboard
+function pinToViewport() {
+  const vv = window.visualViewport;
+  const h = vv ? vv.height : window.innerHeight;
+  const top = vv ? vv.offsetTop : 0;
+  const root = document.documentElement;
+  root.style.setProperty('--vvh', `${Math.round(h)}px`);
+  root.style.setProperty('--vvtop', `${Math.round(top)}px`);
+  root.classList.toggle('kb-open', h < window.innerHeight * 0.8);
 }
-
-function updateResult() {
-  if (!room || room.state.status !== 'result') return;
-  updateScorebar();
-  const st = room.state;
-  const left = Math.max(0, Math.ceil(((st.round.resultAt || 0) + S().resultPause * 1000 - db.now()) / 1000));
-  const last = st.idx + 1 >= st.letters.length;
-  $('#next').textContent = last ? `Final scores in ${left}s` : `Next letter (${st.letters[st.idx + 1]}) in ${left}s`;
+if (window.visualViewport) {
+  window.visualViewport.addEventListener('resize', pinToViewport);
+  window.visualViewport.addEventListener('scroll', pinToViewport);
 }
+window.addEventListener('resize', pinToViewport);
+pinToViewport();
 
 // ----- final -----
 function buildFinal() {

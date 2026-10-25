@@ -149,39 +149,38 @@ summary { font-weight: 700; cursor: pointer; }
 #toast.on { opacity: 1; transform: translateX(-50%) translateY(0); }
 .seg.seg3 { grid-template-columns: 1fr 1fr 1fr; }
 
-/* ---------- in-game keyboard ---------- */
+/* ---------- game screen (pinned above the phone keyboard) ---------- */
 html, body { overscroll-behavior: none; }
-.screen.play { gap: 8px; height: 100dvh; min-height: 0; overflow: hidden; padding-bottom: max(10px, env(safe-area-inset-bottom)); }
-.screen.play .big-letter { font-size: 72px; }
-.screen.play .big-letter.wait { font-size: 34px; padding: 18px 0; }
-.screen.play .cat-name { font-size: 22px; }
-.screen.play .hint { min-height: 56px; }
-.guess-display {
-  min-height: 56px; display: flex; align-items: center; gap: 2px;
-  padding: 10px 16px; border-radius: var(--radius); border: 2px solid var(--accent); background: var(--panel);
-  font-size: 24px; font-weight: 800; letter-spacing: 1px; overflow: hidden; white-space: pre;
+html.in-game, html.in-game body { overflow: hidden; height: 100%; }
+.screen.game {
+  position: fixed; left: 0; right: 0; top: var(--vvtop, 0px); height: var(--vvh, 100dvh);
+  max-width: 520px; margin: 0 auto; min-height: 0; overflow: hidden; gap: 8px;
 }
-.guess-display.locked { border-color: var(--bad); }
-.guess-display .caret { width: 2px; height: 28px; background: var(--accent); animation: blink 1s steps(1) infinite; }
-.guess-display .ph { color: var(--muted); font-weight: 500; font-size: 18px; letter-spacing: 0; margin-left: 4px; }
-@keyframes blink { 50% { opacity: 0; } }
-.screen.play .feedback { min-height: 24px; font-size: 16px; }
-.screen.play .tried, .screen.play .pulse { min-height: 16px; }
-.kb { margin-top: auto; display: flex; flex-direction: column; gap: 8px; user-select: none; -webkit-user-select: none; touch-action: manipulation; }
-.kb-row { display: flex; gap: 5px; justify-content: center; }
-.kb-row:nth-child(2) { padding: 0 5%; }
-.key {
-  flex: 1; min-width: 0; height: 48px; padding: 0; border-radius: 8px;
-  background: #2b303d; font-size: 20px; font-weight: 700; touch-action: manipulation;
-  -webkit-user-select: none; user-select: none;
-}
-.key:active { transform: none; }
-.key.down { background: var(--text); color: var(--bg); }
-.key.wide { flex: 1.5; font-size: 22px; }
-.key.mid { flex: 1.4; font-size: 16px; }
-.key.space { flex: 4; font-size: 16px; color: var(--muted); }
-.key.go { flex: 1.8; background: var(--accent); color: #17140a; }
-.key.go.locked { background: var(--bad); color: var(--text); }
+.screen.game .big-letter { font-size: 72px; }
+.screen.game .big-letter.wait { font-size: 34px; padding: 18px 0; }
+.screen.game .cat-name { font-size: 22px; }
+.screen.game .hint { min-height: 56px; }
+.screen.game .answer { font-size: 30px; }
+.screen.game .answer-label { margin-top: 0; font-size: 14px; }
+.screen.game .winner-line { font-size: 20px; }
+.screen.game .next { font-size: 14px; }
+.screen.game.result .feedback, .screen.game.result .tried, .screen.game.result .pulse { visibility: hidden; }
+.screen.game.result .guess-form { opacity: 0.4; }
+.screen.game .feedback { min-height: 24px; font-size: 16px; }
+.screen.game .tried, .screen.game .pulse { min-height: 16px; }
+/* Tighter layout while the keyboard is open so everything fits above it */
+.kb-open .screen.game { gap: 6px; padding-top: 8px; padding-bottom: 6px; }
+.kb-open .screen.game .rule { display: none; }
+.kb-open .screen.game .cat-name { font-size: 18px; }
+.kb-open .screen.game .pl .sc { font-size: 22px; }
+.kb-open .screen.game .big-letter { font-size: 46px; margin: 0; }
+.kb-open .screen.game .big-letter.wait { font-size: 24px; padding: 6px 0; }
+.kb-open .screen.game .hint { min-height: 44px; gap: 2px; }
+.kb-open .screen.game .answer-label { display: none; }
+.kb-open .screen.game .answer { font-size: 24px; }
+.kb-open .screen.game .ch { height: 28px; font-size: 19px; }
+.kb-open .screen.game .guess-form input { padding: 12px 14px; }
+.kb-open .screen.game .guess-form button { padding: 12px 14px; }
 
 /* ---------- category roll ---------- */
 .reel { position: relative; height: 192px; overflow: hidden; border-radius: var(--radius); background: var(--panel); margin-top: 8px; }
