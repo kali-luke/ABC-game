@@ -4,9 +4,9 @@ Two parts: GitHub Pages hosts the app, and Firebase syncs the two phones. Both a
 
 ## 1. Turn on GitHub Pages
 
-1. On GitHub, open the `abc-game` repo and go to **Settings → Pages**.
+1. On GitHub, open the `ABC-game` repo and go to **Settings → Pages**.
 2. Under **Source**, choose **Deploy from a branch**, pick `main` and `/ (root)`, then **Save**.
-3. After a minute the game is live at `https://kali-luke.github.io/abc-game/`.
+3. After a minute the game is live at `https://kali-luke.github.io/ABC-game/`.
 
 Until Firebase is set up, the game runs in **local test mode**: it only works between two tabs on the same device.
 
