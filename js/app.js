@@ -171,23 +171,58 @@ function makeRound(cat, letter, startAt) {
   return { letter, answer, order: G.revealOrder(answer), startAt };
 }
 
+const SPIN_MS = 2800;
+const REROLLS = 3;
+
+async function pairPlayed() {
+  const ids = playerIds();
+  const s = (await db.get(`stats/${G.pairKey(ids[0], ids[1])}`)) || {};
+  return s.played || [];
+}
+
+// Lobby "Start" and final "Play again": roll a category (both phones watch the same roll)
 async function startGame() {
   const ids = playerIds();
   if (ids.length < 2) { toast('Waiting for a second player'); return; }
-  const key = G.pairKey(ids[0], ids[1]);
-  const pairStats = (await db.get(`stats/${key}`)) || {};
-  const { cat, reset } = G.pickCategory(pairStats.played || []);
-  const settings = S();
-  const letters = G.gameLetters(cat, room.state.mode, settings);
-  const res = await db.transaction(roomPath('state'), cur => {
-    if (!cur || cur.status === 'playing' || cur.status === 'result') return undefined;
+  const { cat } = G.pickCategory(await pairPlayed());
+  await db.transaction(roomPath('state'), cur => {
+    if (!cur || ['playing', 'result', 'picking'].includes(cur.status)) return undefined;
     return {
-      ...cur, status: 'playing', gameNo: (cur.gameNo || 0) + 1, categoryId: cat.id, letters, idx: 0,
-      round: makeRound(cat, letters[0], db.now() + 3500), history: [], statsDone: false,
+      ...cur, status: 'picking', gameNo: (cur.gameNo || 0) + 1, categoryId: cat.id,
+      spinAt: db.now() + 300, rerollsLeft: REROLLS, history: [], statsDone: false,
     };
   });
+}
+
+async function rerollCategory() {
+  const st = room.state;
+  if (st.status !== 'picking' || !(st.rerollsLeft > 0)) return;
+  const played = await pairPlayed();
+  let { cat } = G.pickCategory([...played, st.categoryId]);
+  if (cat.id === st.categoryId) cat = G.pickCategory([st.categoryId]).cat;
+  await db.transaction(roomPath('state'), cur => {
+    if (!cur || cur.status !== 'picking' || cur.gameNo !== st.gameNo || !(cur.rerollsLeft > 0)) return undefined;
+    if (db.now() < cur.spinAt + SPIN_MS) return undefined; // still rolling
+    return { ...cur, categoryId: cat.id, spinAt: db.now() + 150, rerollsLeft: cur.rerollsLeft - 1 };
+  });
+}
+
+async function confirmCategory() {
+  const st = room.state;
+  if (st.status !== 'picking') return;
+  const cat = G.CATEGORY_BY_ID[st.categoryId];
+  const letters = G.gameLetters(cat, st.mode, S());
+  const res = await db.transaction(roomPath('state'), cur => {
+    if (!cur || cur.status !== 'picking' || cur.gameNo !== st.gameNo || cur.categoryId !== cat.id) return undefined;
+    if (db.now() < cur.spinAt + SPIN_MS) return undefined;
+    return { ...cur, status: 'playing', letters, idx: 0, round: makeRound(cat, letters[0], db.now() + 3500) };
+  });
   if (res.committed && res.value) {
-    await db.transaction(`stats/${key}/played`, cur => (reset || !cur ? [cat.id] : [...cur, cat.id]), { allowNull: true });
+    const ids = playerIds();
+    const played = await pairPlayed();
+    const all = played.length + 1 >= G.CATEGORIES.length;
+    await db.transaction(`stats/${G.pairKey(ids[0], ids[1])}/played`,
+      cur => (all || !cur ? [cat.id] : [...cur, cat.id]), { allowNull: true });
   }
 }
 
@@ -315,6 +350,7 @@ function screenKey() {
   if (!roomCode || !room || !room.state) return 'home';
   const st = room.state;
   if (st.status === 'lobby') return 'lobby';
+  if (st.status === 'picking') return `pick:${st.gameNo}`;
   if (st.status === 'playing') return `play:${st.gameNo}:${st.idx}`;
   if (st.status === 'result') return `result:${st.gameNo}:${st.idx}`;
   if (st.status === 'finished') return `final:${st.gameNo}`;
@@ -326,10 +362,11 @@ function render() {
   if (key !== currentKey) {
     currentKey = key;
     const kind = key.split(':')[0];
-    ({ home: buildHome, lobby: buildLobby, play: buildPlay, result: buildResult, final: buildFinal })[kind]();
+    ({ home: buildHome, lobby: buildLobby, pick: buildPick, play: buildPlay, result: buildResult, final: buildFinal })[kind]();
   }
   const kind = currentKey.split(':')[0];
   if (kind === 'lobby') updateLobby();
+  if (kind === 'pick') updatePick();
   if (kind === 'play') updatePlay();
   if (kind === 'result') updateResult();
   if (kind === 'final') updateFinal();
@@ -713,4 +750,68 @@ function botTick() {
     botPlan.done = true;
     claimWin(st.idx, BOT_ID);
   }
+}
+
+// ---------------- category roll ----------------
+function seeded(seed) {
+  let a = seed >>> 0;
+  return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
+}
+const REEL_ITEMS = 26; // names that roll past before landing
+const REEL_H = 64;     // px per row
+
+function buildPick() {
+  $('#app').innerHTML = `<main class="screen pick">
+    <p class="muted center" style="margin-top:24px" id="pick-title">Rolling the category…</p>
+    <div class="reel"><div class="strip" id="strip"></div><div class="reel-glass"></div></div>
+    <p class="rule center" id="pick-rule"></p>
+    <div class="spacer"></div>
+    <p class="muted center small">Either of you can re-roll or start.</p>
+    <button id="play" class="primary" disabled>Play this category</button>
+    <button id="reroll" disabled>Re-roll</button>
+    <button id="leave" class="link">Leave</button>
+  </main>`;
+  $('#play').onclick = confirmCategory;
+  $('#reroll').onclick = rerollCategory;
+  $('#leave').onclick = () => leaveRoom(false);
+  updatePick();
+  const loop = () => { if (currentKey && currentKey.startsWith('pick')) { animatePick(); requestAnimationFrame(loop); } };
+  requestAnimationFrame(loop);
+}
+
+function updatePick() {
+  if (!room || room.state.status !== 'picking') return;
+  const st = room.state, strip = $('#strip');
+  if (strip.dataset.spin !== String(st.spinAt) || strip.dataset.cat !== st.categoryId) {
+    strip.dataset.spin = String(st.spinAt); strip.dataset.cat = st.categoryId;
+    const rand = seeded(st.spinAt);
+    const others = G.CATEGORIES.filter(c => c.id !== st.categoryId);
+    const names = [];
+    for (let i = 0; i < REEL_ITEMS; i++) names.push(others[Math.floor(rand() * others.length)].name);
+    names.push(G.CATEGORY_BY_ID[st.categoryId].name);
+    names.push(others[Math.floor(rand() * others.length)].name);
+    strip.innerHTML = names.map((n, i) => `<div class="reel-item${i === REEL_ITEMS ? ' final' : ''}">${esc(n)}</div>`).join('');
+    strip.classList.remove('landed');
+  }
+  animatePick();
+}
+
+function animatePick() {
+  if (!room || room.state.status !== 'picking') return;
+  const st = room.state, strip = $('#strip');
+  if (!strip) return;
+  const p = Math.min(1, Math.max(0, (db.now() - st.spinAt) / SPIN_MS));
+  const eased = 1 - Math.pow(1 - p, 4);
+  const pos = eased * REEL_ITEMS;
+  strip.style.transform = `translateY(${REEL_H - pos * REEL_H}px)`;
+  const landed = p >= 1;
+  strip.classList.toggle('landed', landed);
+  const cat = G.CATEGORY_BY_ID[st.categoryId];
+  $('#pick-title').textContent = landed ? 'Your category is' : 'Rolling the category…';
+  $('#pick-rule').textContent = landed ? cat.rule : '';
+  $('#play').disabled = !landed;
+  const left = st.rerollsLeft || 0;
+  const rr = $('#reroll');
+  rr.disabled = !landed || left <= 0;
+  rr.textContent = left > 0 ? `Re-roll (${left} left)` : 'No re-rolls left';
 }
