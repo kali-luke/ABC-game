@@ -1,0 +1,10 @@
+{
+  "rules": {
+    "rooms": {
+      "$code": { ".read": true, ".write": true }
+    },
+    "stats": {
+      "$pair": { ".read": true, ".write": true }
+    }
+  }
+}
