@@ -64,7 +64,7 @@ Z: Zendaya, Catherine Zeta-Jones, Renee Zellweger
 {
   id: 'music', name: 'Musicians and bands', rule: "Ignore 'The'. Solo artists by surname: Ed Sheeran is S", people: true,
   data: `
-A: ABBA, Adele, Arctic Monkeys, Aerosmith, AC/DC, Christina Aguilera, Lily Allen | Avicii, Aqua, Atomic Kitten
+A: ABBA, Adele, Arctic Monkeys, Aerosmith, AC⁄DC/ACDC, Christina Aguilera, Lily Allen | Avicii, Aqua, Atomic Kitten
 B: The Beatles, Beyonce, Blur, Bon Jovi, Busted, Blondie, Justin Bieber, David Bowie, Backstreet Boys, Bee Gees, Michael Buble, James Blunt | Black Eyed Peas, Bastille, Bananarama, Boyzone
 C: Coldplay, Phil Collins, Mariah Carey, Eric Clapton, The Clash, The Cure, Johnny Cash, Miley Cyrus, Sabrina Carpenter, Cher, Lewis Capaldi | Kelly Clarkson, Chic, Chvrches
 D: Drake, Daft Punk, Duran Duran, Craig David, Lana Del Rey, Celine Dion, Bob Dylan, Destiny's Child | Depeche Mode, The Darkness, Dire Straits

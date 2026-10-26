@@ -1,6 +1,7 @@
 // Pure game logic: no DOM, no network. Shared by the app and the tests.
 import { PLACES_THINGS } from './categories-places-things.js';
 import { PEOPLE_FUN } from './categories-people-fun.js';
+import { MORE } from './categories-more.js';
 
 export const LETTERS = 'ABCDEFGHIJKLMNOPQRSTUVWXYZ'.split('');
 export const MIN_ANSWERS = 3;
@@ -84,10 +85,10 @@ export function parseCategory(raw) {
     add(obscurePart, false);
     letters[letter] = entries;
   }
-  return { id: raw.id, name: raw.name, rule: raw.rule || '', letters };
+  return { id: raw.id, name: raw.us && !/\bUS\b/.test(raw.name) ? `${raw.name} (US)` : raw.name, rule: raw.rule || '', us: !!raw.us, letters };
 }
 
-export const CATEGORIES = [...PLACES_THINGS, ...PEOPLE_FUN].map(parseCategory);
+export const CATEGORIES = [...PLACES_THINGS, ...PEOPLE_FUN, ...MORE].map(parseCategory);
 export const CATEGORY_BY_ID = Object.fromEntries(CATEGORIES.map(c => [c.id, c]));
 
 export function playableLetters(cat) {
