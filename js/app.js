@@ -73,7 +73,7 @@ function readName() {
   return myName;
 }
 
-async function createRoom() {
+async function createRoom(gameType = 'versus') {
   if (!readName()) return;
   let code;
   for (let i = 0; i < 10; i++) { code = randomCode(); if (!(await db.get(`rooms/${code}/meta`))) break; }
@@ -81,10 +81,11 @@ async function createRoom() {
   await db.set(`rooms/${code}`, {
     meta: { host: me, createdAt: now },
     players: { [me]: { name: myName, joinedAt: now, online: true } },
-    state: { status: 'lobby', mode: store.get('mode', 'full'), settings: { ...G.DEFAULT_SETTINGS, ...store.get('settings', {}) }, gameNo: 0 },
+    state: { status: 'lobby', gameType, mode: store.get('mode', 'full'), settings: { ...G.DEFAULT_SETTINGS, ...store.get('settings', {}) }, gameNo: 0 },
   });
   enterRoom(code);
 }
+const isTeam = () => !!(room && room.state && room.state.gameType === 'team');
 
 async function joinRoom() {
   if (!readName()) return;
@@ -141,14 +142,14 @@ async function leaveRoom(silent) {
 
 function watchStats() {
   const ids = playerIds();
-  if (ids.length < 2) return;
-  const key = G.pairKey(ids[0], ids[1]);
+  if (!ids.length || (ids.length < 2 && !isTeam())) return;
+  const key = G.statsKeyFor(ids);
   if (key === statsKey) return;
   if (unsubStats) unsubStats();
   statsKey = key;
   const pairs = store.get('pairs', []);
-  if (!botMode && !pairs.includes(key)) store.set('pairs', [...pairs, key].slice(-10));
-  unsubStats = db.on(`stats/${key}`, v => { stats = v; if (currentKey && currentKey.startsWith('final')) updateFinal(); });
+  if (!botMode && ids.length >= 2 && !pairs.includes(key)) store.set('pairs', [...pairs, key].slice(-10));
+  unsubStats = db.on(`stats/${key}`, v => { stats = v; if (currentKey && currentKey.startsWith('final')) (isTeam() ? updateTeamFinal : updateFinal)(); });
 }
 
 function watchPulses() {
@@ -176,17 +177,17 @@ const REROLLS = 3;
 
 async function pairPlayed() {
   const ids = playerIds();
-  const s = (await db.get(`stats/${G.pairKey(ids[0], ids[1])}`)) || {};
+  const s = (await db.get(`stats/${G.statsKeyFor(ids)}`)) || {};
   return s.played || [];
 }
 
 // Lobby "Start" and final "Play again": roll a category (both phones watch the same roll)
 async function startGame() {
   const ids = playerIds();
-  if (ids.length < 2) { toast('Waiting for a second player'); return; }
+  if (ids.length < (isTeam() ? 1 : 2)) { toast('Waiting for a second player'); return; }
   const { cat } = G.pickCategory(await pairPlayed());
   await db.transaction(roomPath('state'), cur => {
-    if (!cur || ['playing', 'result', 'picking'].includes(cur.status)) return undefined;
+    if (!cur || ['playing', 'result', 'picking', 'team'].includes(cur.status)) return undefined;
     return {
       ...cur, status: 'picking', gameNo: (cur.gameNo || 0) + 1, categoryId: cat.id,
       spinAt: db.now() + 300, rerollsLeft: REROLLS, history: [], statsDone: false,
@@ -211,17 +212,24 @@ async function confirmCategory() {
   const st = room.state;
   if (st.status !== 'picking') return;
   const cat = G.CATEGORY_BY_ID[st.categoryId];
-  const letters = G.gameLetters(cat, st.mode, S());
+  const team = st.gameType === 'team';
+  const letters = team
+    ? G.gameLetters(cat, st.mode, S(), Math.random, S().teamNeed + 1)
+    : G.gameLetters(cat, st.mode, S());
   const res = await db.transaction(roomPath('state'), cur => {
     if (!cur || cur.status !== 'picking' || cur.gameNo !== st.gameNo || cur.categoryId !== cat.id) return undefined;
     if (db.now() < cur.spinAt + SPIN_MS) return undefined;
+    if (team) {
+      const { round, history, found, splits, skipped, teamResult, ...rest } = cur;
+      return { ...rest, status: 'team', letters, idx: 0, startAt: db.now() + 3500, penalty: 0, statsDone: false };
+    }
     return { ...cur, status: 'playing', letters, idx: 0, round: makeRound(cat, letters[0], db.now() + 3500) };
   });
   if (res.committed && res.value) {
     const ids = playerIds();
     const played = await pairPlayed();
     const all = played.length + 1 >= G.CATEGORIES.length;
-    await db.transaction(`stats/${G.pairKey(ids[0], ids[1])}/played`,
+    await db.transaction(`stats/${G.statsKeyFor(ids)}/played`,
       cur => (all || !cur ? [cat.id] : [...cur, cat.id]), { allowNull: true });
   }
 }
@@ -339,9 +347,11 @@ function tick() {
   if (st.status === 'result' && st.round && now >= (st.round.resultAt || 0) + s.resultPause * 1000) {
     attempt(`adv-${st.gameNo}-${st.idx}`, () => advance(st.idx));
   }
-  if (st.status === 'finished' && !st.statsDone) attempt(`stats-${st.gameNo}`, recordStats);
+  if (st.status === 'finished' && !st.statsDone) attempt(`stats-${st.gameNo}`, st.gameType === 'team' ? recordTeamStats : recordStats);
   if (botMode) botTick();
   if (currentKey && currentKey.startsWith('game')) updateGame();
+  if (currentKey && currentKey.startsWith('team')) updateTeam();
+  if (currentKey && (currentKey.startsWith('game') || currentKey.startsWith('team'))) pinToViewport();
 }
 
 // ---------------- rendering ----------------
@@ -351,6 +361,7 @@ function screenKey() {
   if (st.status === 'lobby') return 'lobby';
   if (st.status === 'picking') return `pick:${st.gameNo}`;
   if (st.status === 'playing' || st.status === 'result') return `game:${st.gameNo}`;
+  if (st.status === 'team') return `team:${st.gameNo}`;
   if (st.status === 'finished') return `final:${st.gameNo}`;
   return 'home';
 }
@@ -360,14 +371,17 @@ function render() {
   if (key !== currentKey) {
     currentKey = key;
     const kind = key.split(':')[0];
-    document.documentElement.classList.toggle('in-game', kind === 'game');
-    ({ home: buildHome, lobby: buildLobby, pick: buildPick, game: buildGame, final: buildFinal })[kind]();
+    document.documentElement.classList.toggle('in-game', kind === 'game' || kind === 'team');
+    if (kind === 'game' || kind === 'team') window.scrollTo(0, 0);
+    ({ home: buildHome, lobby: buildLobby, pick: buildPick, game: buildGame, team: buildTeam,
+       final: () => (isTeam() ? buildTeamFinal() : buildFinal()) })[kind]();
   }
   const kind = currentKey.split(':')[0];
   if (kind === 'lobby') updateLobby();
   if (kind === 'pick') updatePick();
   if (kind === 'game') updateGame();
-  if (kind === 'final') updateFinal();
+  if (kind === 'team') updateTeam();
+  if (kind === 'final') (isTeam() ? updateTeamFinal : updateFinal)();
 }
 
 function scorebarHTML() {
@@ -393,25 +407,43 @@ function updateScorebar() {
 }
 
 // ----- home -----
+const MODES = {
+  solo:   { label: 'Solo', sub: 'You vs the bot', button: 'Start practice',
+            desc: 'Practise on this phone against a bot. Pick slow, medium or fast.' },
+  versus: { label: 'Versus', sub: 'Race each other', button: 'Create versus game',
+            desc: 'Same letter on both phones. First to the hidden answer wins the point.' },
+  team:   { label: 'Team', sub: 'Work together', button: 'Create team game',
+            desc: 'Find 2 different answers for every letter between you. Race the clock and beat your best time.' },
+};
 async function buildHome() {
+  let type = store.get('gameType', 'versus');
+  if (!MODES[type]) type = 'versus';
   $('#app').innerHTML = `<main class="screen home">
     <h1 class="logo">ABC<span>Race</span></h1>
-    <p class="tagline">Same letter, same category. First to the hidden answer wins.</p>
     <label>Your name<input id="name" maxlength="16" autocomplete="off" value="${esc(myName)}" placeholder="e.g. Luke"></label>
-    <button id="create" class="primary">Create game</button>
-    <div class="or">or join with a code</div>
+    <div class="modes" id="modes">${Object.entries(MODES).map(([k, m]) =>
+      `<button type="button" data-type="${k}"><b>${m.label}</b><span>${m.sub}</span></button>`).join('')}</div>
+    <p class="mode-desc" id="mode-desc"></p>
+    <button id="go-mode" class="primary"></button>
+    <div class="or">or join a friend's game</div>
     <div class="row">
       <input id="code" maxlength="4" placeholder="CODE" autocomplete="off" autocorrect="off" autocapitalize="characters" spellcheck="false">
       <button id="join">Join</button>
     </div>
-    <button id="practice">Practice vs bot</button>
     <div class="records" id="records"></div>
     <div class="spacer"></div>
     ${hasFirebase ? '' : `<p class="note">Local test mode: Firebase isn't set up yet, so games only work between two tabs on this device. See SETUP.md to play across phones.</p>`}
   </main>`;
-  $('#create').onclick = createRoom;
+  const pick = t => {
+    type = t; store.set('gameType', t);
+    document.querySelectorAll('#modes button').forEach(b => b.classList.toggle('on', b.dataset.type === t));
+    $('#mode-desc').textContent = MODES[t].desc;
+    $('#go-mode').textContent = MODES[t].button;
+  };
+  document.querySelectorAll('#modes button').forEach(b => b.onclick = () => pick(b.dataset.type));
+  pick(type);
+  $('#go-mode').onclick = () => (type === 'solo' ? startPractice() : createRoom(type));
   $('#join').onclick = joinRoom;
-  $('#practice').onclick = startPractice;
   $('#code').addEventListener('keydown', e => { if (e.key === 'Enter') joinRoom(); });
   // all-time records for pairs this device has played
   const pairs = store.get('pairs', []);
@@ -435,11 +467,13 @@ function buildLobby() {
   const isHost = room.meta.host === me;
   const s = S();
   const field = (k, label, step = 1) => `<span>${label}</span><input type="number" inputmode="decimal" step="${step}" min="0" data-k="${k}" value="${s[k]}" ${isHost ? '' : 'disabled'}>`;
+  const team = isTeam();
   $('#app').innerHTML = `<main class="screen lobby">
     ${botMode ? `<h2 class="center" style="margin-top:20px">Practice vs bot</h2>
     <p class="muted center small">Plays on this phone only. Nothing counts towards your record.</p>
     <div class="seg seg3" id="botspeed">${Object.entries(BOT_SPEEDS).map(([k, v]) => `<button data-speed="${k}">${v.label}</button>`).join('')}</div>`
-    : `<p class="muted center">Game code</p>
+    : `<div class="type-pill ${team ? 'team' : ''}">${team ? 'Team game' : 'Versus'}</div>
+    <p class="muted center">Game code</p>
     <div class="room-code">${esc(roomCode)}</div>
     <button id="share">Send invite link</button>`}
     <ul class="players" id="players"></ul>
@@ -449,13 +483,16 @@ function buildLobby() {
     </div>
     <details>
       <summary>Timings</summary>
-      <div class="timings">
+      <div class="timings">${team ? `
+        ${field('teamNeed', 'Answers needed per letter')}
+        ${field('skipPenalty', 'Time added for a skip (s)')}
+        ${field('lockout', 'Lockout after wrong guess (s)')}` : `
         ${field('hintStart', 'Letter count appears after (s)')}
         ${field('revealEvery', 'Reveal a letter every (s)')}
         ${field('maxReveal', 'Max share of letters revealed', 0.1)}
         ${field('roundLength', 'Round ends after (s)')}
         ${field('resultPause', 'Answer shown for (s)')}
-        ${field('lockout', 'Lockout after wrong guess (s)')}
+        ${field('lockout', 'Lockout after wrong guess (s)')}`}
       </div>
     </details>
     <div class="spacer"></div>
@@ -476,8 +513,9 @@ function buildLobby() {
       db.update(roomPath('state'), { mode: b.dataset.mode });
     });
     document.querySelectorAll('.timings input').forEach(inp => inp.onchange = () => {
-      const v = parseFloat(inp.value);
+      let v = parseFloat(inp.value);
       if (!(v >= 0)) return;
+      if (inp.dataset.k === 'teamNeed') v = Math.min(5, Math.max(1, Math.round(v)));
       const settings = { ...S(), [inp.dataset.k]: v };
       store.set('settings', settings);
       db.update(roomPath('state'), { settings });
@@ -488,11 +526,11 @@ function buildLobby() {
 function updateLobby() {
   const ids = playerIds();
   const list = ids.map(id => `<li><span>${esc(nameOf(id))}${id === me ? ' <span class="muted small">(you)</span>' : ''}</span><span class="muted small">${room.meta.host === id ? 'host' : ''}</span></li>`);
-  if (ids.length < 2) list.push(`<li class="waiting">Waiting for player 2… share the code</li>`);
+  if (ids.length < 2) list.push(`<li class="waiting">${isTeam() ? 'Waiting for your teammate… or start on your own' : 'Waiting for player 2… share the code'}</li>`);
   $('#players').innerHTML = list.join('');
   document.querySelectorAll('#mode button').forEach(b => b.classList.toggle('on', b.dataset.mode === (room.state.mode || 'full')));
   document.querySelectorAll('#botspeed button').forEach(b => b.classList.toggle('on', b.dataset.speed === (room.state.botSpeed || 'medium')));
-  const st = $('#start'); if (st) st.disabled = ids.length < 2;
+  const st = $('#start'); if (st) st.disabled = ids.length < (isTeam() ? 1 : 2);
   if (room.meta.host !== me) {
     const s = S();
     document.querySelectorAll('.timings input').forEach(inp => { inp.value = s[inp.dataset.k]; });
@@ -538,7 +576,7 @@ function buildGame() {
   });
   $('#feedback').addEventListener('click', e => e.preventDefault());
   input.addEventListener('input', () => { if (ui.feedback && ui.feedback.kind !== 'near') { ui.feedback = null; updateGame(); } });
-  input.addEventListener('focus', () => { [30, 250, 600].forEach(t => setTimeout(pinToViewport, t)); });
+  setupNoScrollInput(input);
   updateGame();
 }
 
@@ -616,22 +654,46 @@ function updateGame() {
   pulse.classList.toggle('on', on);
 }
 
-// Keep the game screen exactly over the visible area, above the phone keyboard
+// Keep the game screen exactly over the visible area, above the phone keyboard.
+// iPhones like to scroll the whole page up when the keyboard opens, which pushes the
+// scores off the top. We undo that scroll and size the screen to the space that's left.
+let fullHeight = 0;
 function pinToViewport() {
   const vv = window.visualViewport;
+  const inGame = document.documentElement.classList.contains('in-game');
+  if (inGame && (window.scrollY || document.documentElement.scrollTop || document.body.scrollTop)) {
+    window.scrollTo(0, 0); document.documentElement.scrollTop = 0; document.body.scrollTop = 0;
+  }
   const h = vv ? vv.height : window.innerHeight;
-  const top = vv ? vv.offsetTop : 0;
+  const top = vv ? Math.max(0, vv.offsetTop) : 0;
+  fullHeight = Math.max(fullHeight, h, window.innerHeight * 0.9);
   const root = document.documentElement;
-  root.style.setProperty('--vvh', `${Math.round(h)}px`);
-  root.style.setProperty('--vvtop', `${Math.round(top)}px`);
-  root.classList.toggle('kb-open', h < window.innerHeight * 0.8);
+  const hs = `${Math.round(h)}px`, ts = `${Math.round(top)}px`;
+  if (root.style.getPropertyValue('--vvh') !== hs) root.style.setProperty('--vvh', hs);
+  if (root.style.getPropertyValue('--vvtop') !== ts) root.style.setProperty('--vvtop', ts);
+  root.classList.toggle('kb-open', h < fullHeight * 0.8);
 }
 if (window.visualViewport) {
   window.visualViewport.addEventListener('resize', pinToViewport);
   window.visualViewport.addEventListener('scroll', pinToViewport);
 }
-window.addEventListener('resize', pinToViewport);
+window.addEventListener('resize', () => { fullHeight = 0; pinToViewport(); });
+window.addEventListener('scroll', () => { if (document.documentElement.classList.contains('in-game')) pinToViewport(); }, { passive: true });
 pinToViewport();
+
+// Focus the answer box without letting the phone scroll the page to it
+function setupNoScrollInput(input) {
+  input.addEventListener('touchend', e => {
+    if (document.activeElement === input) return;
+    e.preventDefault();
+    input.focus({ preventScroll: true });
+  });
+  input.addEventListener('focus', () => {
+    let n = 0;
+    const settle = () => { pinToViewport(); if (++n < 40) requestAnimationFrame(settle); };
+    requestAnimationFrame(settle);
+  });
+}
 
 // ----- final -----
 function buildFinal() {
@@ -780,4 +842,224 @@ function animatePick() {
   const rr = $('#reroll');
   rr.disabled = !landed || left <= 0;
   rr.textContent = left > 0 ? `Re-roll (${left} left)` : 'No re-rolls left';
+}
+
+// ---------------- team mode ----------------
+// Work together: find `teamNeed` different valid answers for every letter. Clock counts up.
+const teamFound = (st, idx) => {
+  const f = st.found && st.found[`L${idx}`];
+  return Array.isArray(f) ? f.filter(Boolean) : Object.values(f || {});
+};
+const teamElapsed = (st, now) => (st.status === 'finished' && st.totalMs != null)
+  ? st.totalMs : Math.max(0, now - st.startAt) + (st.penalty || 0);
+const teamBestKey = st => `${st.categoryId}_${st.mode || 'full'}`;
+
+function advanceTeam(cur, now, extra = {}) {
+  const idx = cur.idx;
+  const splits = { ...(cur.splits || {}), [`L${idx}`]: now - cur.startAt };
+  const next = { ...cur, ...extra, splits };
+  if (idx + 1 >= cur.letters.length) {
+    return { ...next, status: 'finished', finishedAt: now, totalMs: now - cur.startAt + (next.penalty || 0) };
+  }
+  return { ...next, idx: idx + 1 };
+}
+
+async function submitTeam(text) {
+  const st = room.state;
+  if (st.status !== 'team' || db.now() < st.startAt) return;
+  if (Date.now() < ui.lockUntil) { const g = $('#guess'); g.classList.remove('shake'); void g.offsetWidth; g.classList.add('shake'); return; }
+  const idx = st.idx, letter = st.letters[idx];
+  const r = G.checkGuess(catOf(st), letter, null, text);
+  if (r.result === 'empty') return;
+  const input = $('#guess');
+  if (r.result === 'nearmiss') { ui.feedback = { kind: 'near', text: 'Did you mean', suggestion: r.suggestion }; updateTeam(); return; }
+  if (r.result !== 'valid') {
+    ui.feedback = { kind: 'invalid', text: '✗ Not valid' };
+    ui.lockUntil = Date.now() + S().lockout * 1000;
+    input.value = ''; updateTeam(); return;
+  }
+  const name = r.matched;
+  if (teamFound(st, idx).some(f => f.name === name)) {
+    ui.feedback = { kind: 'valid', text: `Already got ${name}` }; input.value = ''; updateTeam(); return;
+  }
+  input.value = '';
+  const res = await db.transaction(roomPath('state'), cur => {
+    if (!cur || cur.status !== 'team' || cur.idx !== idx) return undefined;
+    const now = db.now();
+    if (now < cur.startAt) return undefined;
+    const found = teamFound(cur, idx);
+    if (found.some(f => f.name === name)) return undefined;
+    const list = [...found, { name, by: me }];
+    const withFound = { ...cur, found: { ...(cur.found || {}), [`L${idx}`]: list } };
+    const need = { ...G.DEFAULT_SETTINGS, ...(cur.settings || {}) }.teamNeed;
+    return list.length >= need ? advanceTeam(withFound, now) : withFound;
+  });
+  if (res.committed && res.value) {
+    const done = res.value.idx !== idx || res.value.status === 'finished';
+    ui.feedback = { kind: 'good', text: done ? `✓ ${name} · ${letter} done!` : `✓ ${name}` };
+  } else if (room.state.idx === idx) {
+    ui.feedback = { kind: 'valid', text: `Already got ${name}` };
+  }
+  updateTeam();
+}
+
+function teamSkip() {
+  const st = room.state;
+  if (st.status !== 'team' || db.now() < st.startAt) return;
+  const idx = st.idx;
+  db.transaction(roomPath('state'), cur => {
+    if (!cur || cur.status !== 'team' || cur.idx !== idx) return undefined;
+    const pen = ({ ...G.DEFAULT_SETTINGS, ...(cur.settings || {}) }.skipPenalty || 0) * 1000;
+    return advanceTeam(cur, db.now(), {
+      penalty: (cur.penalty || 0) + pen,
+      skipped: { ...(cur.skipped || {}), [`L${idx}`]: true },
+    });
+  }).then(res => {
+    if (res.committed) { ui.feedback = { kind: 'invalid', text: `Skipped ${st.letters[idx]} · +${S().skipPenalty}s` }; updateTeam(); }
+  });
+}
+
+function buildTeam() {
+  const cat = catOf(room.state);
+  ui.teamIdx = null; ui.feedback = null; ui.lockUntil = 0;
+  $('#app').innerHTML = `<main class="screen game team" id="team">
+    <header class="teambar">
+      <div class="clockbox"><span class="clock" id="clock">0:00</span><span class="best" id="best"></span></div>
+      <div class="progress" id="progress"></div>
+      <button type="button" class="skip" id="skip">Skip +${S().skipPenalty}s</button>
+    </header>
+    <div class="cat"><div class="cat-name">${esc(cat.name)}</div><div class="rule">${esc(cat.rule)}</div></div>
+    <div class="big-letter" id="letter"></div>
+    <div class="slots" id="slots"></div>
+    <form class="guess-form" id="gf" autocomplete="off" action="#">
+      <input id="guess" type="text" autocomplete="off" autocorrect="off" autocapitalize="words" spellcheck="false" enterkeyhint="go" maxlength="40" placeholder="Tap here to type">
+      <button type="button" class="primary" id="go">Go</button>
+    </form>
+    <div class="feedback" id="feedback"></div>
+    <div class="teammates" id="teammates"></div>
+  </main>`;
+  const input = $('#guess');
+  $('#gf').onsubmit = e => { e.preventDefault(); submitTeam(input.value); };
+  $('#go').addEventListener('pointerdown', e => { e.preventDefault(); submitTeam(input.value); });
+  $('#skip').addEventListener('pointerdown', e => { e.preventDefault(); teamSkip(); });
+  $('#feedback').addEventListener('pointerdown', e => {
+    const b = e.target.closest('.suggest');
+    if (b) { e.preventDefault(); input.value = b.dataset.v; submitTeam(b.dataset.v); }
+  });
+  $('#feedback').addEventListener('click', e => e.preventDefault());
+  input.addEventListener('input', () => { if (ui.feedback && ui.feedback.kind !== 'near') { ui.feedback = null; updateTeam(); } });
+  setupNoScrollInput(input);
+  updateTeam();
+}
+
+function updateTeam() {
+  if (!room || room.state.status !== 'team' || !$('#team')) return;
+  const st = room.state, s = S(), now = db.now();
+  if (ui.teamIdx !== st.idx) {
+    if (ui.teamIdx != null && ui.feedback && ui.feedback.kind !== 'good' && ui.feedback.kind !== 'invalid') ui.feedback = null;
+    ui.teamIdx = st.idx; ui.lockUntil = 0;
+  }
+  const before = now < st.startAt;
+  $('#clock').textContent = before ? '0:00' : G.fmtTime(teamElapsed(st, now));
+  const best = stats && stats.teamBest && stats.teamBest[teamBestKey(st)];
+  $('#best').textContent = best ? `Best ${G.fmtTime(best)}` : 'No best yet';
+  $('#progress').textContent = `${st.idx + 1} / ${st.letters.length}`;
+  const letterEl = $('#letter');
+  if (before) {
+    letterEl.className = 'big-letter wait';
+    letterEl.textContent = `Get ready… ${Math.ceil((st.startAt - now) / 1000)}`;
+  } else {
+    letterEl.className = 'big-letter';
+    letterEl.textContent = st.letters[st.idx];
+  }
+  const found = teamFound(st, st.idx);
+  const slots = [];
+  for (let i = 0; i < s.teamNeed; i++) {
+    const f = found[i];
+    slots.push(f ? `<div class="slot filled"><span class="nm">${esc(f.name)}</span><span class="by">${esc(f.by === me ? 'You' : nameOf(f.by))}</span></div>`
+                 : `<div class="slot"><span class="nm">?</span><span class="by">&nbsp;</span></div>`);
+  }
+  const slotsHTML = slots.join('');
+  const sl = $('#slots');
+  if (sl.dataset.html !== slotsHTML) { sl.innerHTML = slotsHTML; sl.dataset.html = slotsHTML; }
+
+  const locked = Date.now() < ui.lockUntil;
+  $('#gf').classList.toggle('locked', locked);
+  $('#go').textContent = locked ? `${Math.ceil((ui.lockUntil - Date.now()) / 1000)}s` : 'Go';
+  const f = ui.feedback;
+  let fHTML = '';
+  if (f) fHTML = f.kind === 'near'
+    ? `${esc(f.text)} <button type="button" class="suggest" data-v="${esc(f.suggestion)}">${esc(f.suggestion)}</button>?`
+    : esc(f.text);
+  const fb = $('#feedback');
+  if (fb.dataset.html !== fHTML) { fb.innerHTML = fHTML; fb.dataset.html = fHTML; fb.className = `feedback ${f ? f.kind : ''}`; }
+  const mates = playerIds().map(id => `${esc(id === me ? 'You' : nameOf(id))}${room.players[id].online === false ? ' (offline)' : ''}`).join(' + ');
+  const tm = $('#teammates'); const tmHTML = `Team: ${mates}`;
+  if (tm.innerHTML !== tmHTML) tm.innerHTML = tmHTML;
+}
+
+async function recordTeamStats() {
+  const st = room.state, gameNo = st.gameNo;
+  const ids = playerIds();
+  const key = G.statsKeyFor(ids);
+  const claim = await db.transaction(roomPath('state'), cur => {
+    if (!cur || cur.status !== 'finished' || cur.gameNo !== gameNo || cur.statsDone) return undefined;
+    return { ...cur, statsDone: true };
+  });
+  if (!claim.committed || !claim.value) return;
+  const bk = teamBestKey(st);
+  let prevBest = null;
+  await db.transaction(`stats/${key}`, cur => {
+    const s = cur || {};
+    s.names = { ...(s.names || {}) };
+    ids.forEach(id => { s.names[id] = nameOf(id); });
+    s.teamGames = (s.teamGames || 0) + 1;
+    s.teamBest = s.teamBest || {};
+    prevBest = s.teamBest[bk] ?? null;
+    if (prevBest == null || st.totalMs < prevBest) s.teamBest[bk] = st.totalMs;
+    return s;
+  }, { allowNull: true });
+  await db.update(roomPath('state'), { teamResult: { prevBest: prevBest ?? 0, first: prevBest == null } });
+}
+
+function buildTeamFinal() {
+  $('#app').innerHTML = `<main class="screen final">
+    <div class="headline">Finished!</div>
+    <div class="team-time" id="team-time"></div>
+    <div class="team-sub" id="team-sub"></div>
+    <div class="record-line" id="record-line"></div>
+    <div class="card"><h3>Letter by letter</h3><table class="stat-table splits" id="splits"></table></div>
+    <div class="spacer"></div>
+    <button id="again" class="primary">Play again</button>
+    <button id="leave" class="link">Leave</button>
+  </main>`;
+  $('#again').onclick = startGame;
+  $('#leave').onclick = () => leaveRoom(false);
+  updateTeamFinal();
+}
+
+function updateTeamFinal() {
+  if (!room || room.state.status !== 'finished' || !$('#team-time')) return;
+  const st = room.state;
+  const cat = catOf(st);
+  $('#team-time').textContent = G.fmtTime(st.totalMs || 0);
+  const skips = Object.keys(st.skipped || {}).length;
+  $('#team-sub').textContent = `${cat.name} · ${st.letters.length} letters${skips ? ` · ${skips} skipped (+${G.fmtTime(st.penalty || 0)})` : ''}`;
+  const tr = st.teamResult;
+  let rec = '<span class="muted">Saving…</span>';
+  if (tr) {
+    if (tr.first) rec = `<span class="good">First time on ${esc(cat.name)}. That's the time to beat!</span>`;
+    else if (st.totalMs < tr.prevBest) rec = `<span class="good">🏆 New record! Old best ${G.fmtTime(tr.prevBest)}</span>`;
+    else rec = `<span class="muted">Best: ${G.fmtTime(tr.prevBest)} (${G.fmtTime(st.totalMs - tr.prevBest)} off)</span>`;
+  }
+  const rl = $('#record-line'); if (rl.innerHTML !== rec) rl.innerHTML = rec;
+  let prev = 0;
+  const rows = st.letters.map((L, i) => {
+    const t = (st.splits && st.splits[`L${i}`]) ?? prev;
+    const dt = t - prev; prev = t;
+    const skipped = st.skipped && st.skipped[`L${i}`];
+    const names = teamFound(st, i).map(f => esc(f.name)).join(', ');
+    return `<tr><td class="lt">${L}</td><td>${skipped ? `<span class="muted">${names ? names + ', ' : ''}skipped</span>` : names}</td><td class="n">${Math.round(dt / 1000)}s</td></tr>`;
+  }).join('');
+  const sp = $('#splits'); if (sp.innerHTML !== rows) sp.innerHTML = rows;
 }

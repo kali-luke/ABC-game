@@ -196,3 +196,45 @@ html.in-game, html.in-game body { overflow: hidden; height: 100%; }
 .screen.pick { justify-content: center; }
 .screen.pick .spacer { flex: 0 0 24px; }
 .reel::after { background: rgba(255, 210, 63, 0.07); }
+
+/* ---------- home: mode picker ---------- */
+.modes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 8px; }
+.modes button { display: flex; flex-direction: column; gap: 2px; padding: 14px 6px; background: var(--panel); border: 2px solid var(--line); }
+.modes button b { font-size: 19px; }
+.modes button span { font-size: 12px; color: var(--muted); font-weight: 600; }
+.modes button.on { border-color: var(--accent); background: #2a2614; }
+.modes button.on b { color: var(--accent); }
+.mode-desc { margin: -2px 2px 0; color: var(--muted); font-size: 14px; text-align: center; min-height: 36px; }
+.home .logo { margin: 20px 0 6px; }
+.type-pill { align-self: center; margin-top: 16px; padding: 4px 12px; border-radius: 999px; background: var(--panel-2); font-weight: 800; font-size: 13px; letter-spacing: 1px; text-transform: uppercase; color: var(--them); }
+.type-pill.team { color: var(--me); }
+
+/* ---------- team game ---------- */
+.teambar { display: grid; grid-template-columns: 1fr auto 1fr; align-items: center; gap: 8px; }
+.clockbox { display: flex; flex-direction: column; }
+.clock { font-size: 30px; font-weight: 900; color: var(--me); font-variant-numeric: tabular-nums; line-height: 1.1; }
+.best { font-size: 12px; color: var(--muted); font-weight: 600; }
+.skip { justify-self: end; padding: 8px 12px; font-size: 14px; border-radius: 999px; background: var(--panel-2); color: var(--warn); }
+.slots { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 8px; }
+.slot { padding: 8px 10px; border-radius: 12px; border: 2px dashed var(--line); text-align: center; min-width: 0; }
+.slot .nm { display: block; font-weight: 800; font-size: 18px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.slot .by { display: block; font-size: 12px; color: var(--muted); }
+.slot.filled { border-style: solid; border-color: var(--good); background: rgba(61, 220, 151, 0.08); }
+.slot.filled .nm { color: var(--good); }
+.feedback.good { color: var(--good); }
+.teammates { text-align: center; font-size: 13px; color: var(--muted); }
+.kb-open .screen.team .clock { font-size: 22px; }
+.kb-open .screen.team .best { display: none; }
+.kb-open .screen.team .slot { padding: 4px 8px; }
+.kb-open .screen.team .slot .nm { font-size: 15px; }
+.kb-open .screen.team .slot .by, .kb-open .screen.team .teammates { display: none; }
+.team-time { font-size: 72px; font-weight: 900; text-align: center; color: var(--me); line-height: 1; font-variant-numeric: tabular-nums; }
+.team-sub { text-align: center; color: var(--muted); }
+.record-line { text-align: center; font-weight: 800; font-size: 18px; min-height: 24px; }
+.record-line .good { color: var(--good); }
+.splits td.lt { width: 30px; font-weight: 900; color: var(--accent); }
+.final .card { max-height: 40vh; overflow-y: auto; }
+
+/* ---------- keep the game pinned: body can't scroll while playing ---------- */
+html.in-game body { position: fixed; inset: 0; width: 100%; }
+.screen.game .scorebar, .screen.game .teambar { flex-shrink: 0; }

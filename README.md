@@ -1,6 +1,12 @@
 # ABC Race
 
-A two-player ABC category game for phones. You both get the same category and letter, and race to type the one hidden answer.
+An ABC category game for phones, with three modes:
+
+- **Solo**: practise against a bot on one phone.
+- **Versus**: both phones get the same category and letter, and you race to type the one hidden answer.
+- **Team**: work together to find 2 different answers for every letter, against the clock. Skipping a letter adds 20 seconds. Best times are saved per category.
+
+Versus rules:
 
 - First to the hidden answer scores: 2 points before any hints, 1 point after.
 - After 15 seconds the letter count appears, then a letter is revealed every 10 seconds (up to 60%).

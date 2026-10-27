@@ -14,6 +14,8 @@ export const DEFAULT_SETTINGS = {
   resultPause: 5,   // seconds the answer is shown before the next letter
   lockout: 2,       // seconds locked out after a wrong guess
   quickLetters: 10, // letters in a quick game
+  teamNeed: 2,      // team mode: different answers needed per letter
+  skipPenalty: 20,  // team mode: seconds added for skipping a letter
 };
 
 // ---------- text matching ----------
@@ -91,10 +93,10 @@ export function parseCategory(raw) {
 export const CATEGORIES = [...PLACES_THINGS, ...PEOPLE_FUN, ...MORE].map(parseCategory);
 export const CATEGORY_BY_ID = Object.fromEntries(CATEGORIES.map(c => [c.id, c]));
 
-export function playableLetters(cat) {
+export function playableLetters(cat, minAnswers = MIN_ANSWERS) {
   return LETTERS.filter(l => {
     const e = cat.letters[l] || [];
-    return e.length >= MIN_ANSWERS && e.some(x => x.well);
+    return e.length >= Math.max(MIN_ANSWERS, minAnswers) && e.some(x => x.well);
   });
 }
 
@@ -177,8 +179,8 @@ export function pointsFor(elapsed, settings) {
   return elapsed < settings.hintStart * 1000 ? 2 : 1;
 }
 
-export function gameLetters(cat, mode, settings, rand = Math.random) {
-  const all = playableLetters(cat);
+export function gameLetters(cat, mode, settings, rand = Math.random, minAnswers = MIN_ANSWERS) {
+  const all = playableLetters(cat, minAnswers);
   if (mode !== 'quick' || all.length <= settings.quickLetters) return all;
   const pool = [...all];
   for (let i = pool.length - 1; i > 0; i--) {
@@ -203,4 +205,15 @@ export function pickCategory(playedIds, rand = Math.random) {
 
 export function pairKey(a, b) {
   return [a, b].sort().join('_');
+}
+
+// Stats key for whoever is in the room: the pair, or a single player on their own
+export function statsKeyFor(ids) {
+  if (ids.length >= 2) return pairKey(ids[0], ids[1]);
+  return `solo_${ids[0]}`;
+}
+
+export function fmtTime(ms) {
+  const t = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(t / 60)}:${String(t % 60).padStart(2, '0')}`;
 }
